@@ -1,0 +1,233 @@
+heroku login
+heroku create jrmmba-shoppingcart
+heroku addons:create heroku-postgresql:hobby-dev -a jrmmba-shoppingcart
+heroku config -a jrmmba-shoppingcart
+
+heroku config:set OAUTHCLIENTID=lambda-client -a jrmmba-shoppingcart
+heroku config:set OAUTHCLIENTSECRET=lambda-secret -a jrmmba-shoppingcart
+
+Use the heroku GUI to access log
+
+******************************
+
+In Java
+
+Add the plugin for heroku
+
+<finalName>jrmmba-shoppingcart</finalName>
+
+<!-- Heroku Maven Plugin Configuration -->
+<plugin>
+    <groupId>com.heroku.sdk</groupId>
+    <artifactId>heroku-maven-plugin</artifactId>
+    <version>3.0.2</version>
+    <configuration>
+        <appName>${project.build.finalName}</appName>
+        <includeTarget>false</includeTarget>
+        <includes>
+            <include>${project.build.directory}/${project.build.finalName}.jar</include>
+        </includes>
+        <jdkVersion>${java.version}</jdkVersion>
+        <processTypes>
+            <web>java $JAVA_OPTS -Dserver.port=$PORT -jar target/${project.build.finalName}.jar</web>
+        </processTypes>
+    </configuration>
+</plugin>
+
+
+For PostgreSQL add the depedency
+
+<dependency>
+    <groupId>org.postgresql</groupId>
+    <artifactId>postgresql</artifactId>
+</dependency>
+
+Add the DataSourceConfig class to use PostgreSQL
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+package com.lambdaschool.shoppingcart.config;
+
+import com.zaxxer.hikari.HikariConfig;
+import com.zaxxer.hikari.HikariDataSource;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.jdbc.DataSourceBuilder;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+
+import javax.sql.DataSource;
+
+/**
+ * Configures which database we are using based on a property in application.properties
+ */
+@Configuration
+public class DataSourceConfig
+{
+    /**
+     * The property from application properties. Defaults to H2
+     */
+    @Value("${local.run.db:h2}")
+    private String dbValue;
+
+    /**
+     * A config var from Heroku giving the url for access to POSTGRESQL. Default to empty string
+     */
+    @Value("${spring.datasource.url:}")
+    private String dbURL;
+
+    /**
+     * The actual datasource configuration
+     *
+     * @return the datasource to use
+     */
+    @Bean
+    public DataSource dataSource()
+    {
+        if (dbValue.equalsIgnoreCase("POSTGRESQL"))
+        {
+            // Assume Heroku
+            HikariConfig config = new HikariConfig();
+            config.setDriverClassName("org.postgresql.Driver");
+            config.setJdbcUrl(dbURL);
+            return new HikariDataSource(config);
+        } else
+        {
+            // Assume H2
+            String myURLString = "jdbc:h2:mem:testdb";
+            String myDriverClass = "org.h2.Driver";
+            String myDBUser = "sa";
+            String myDBPassword = "";
+
+            return DataSourceBuilder.create()
+                .username(myDBUser)
+                .password(myDBPassword)
+                .url(myURLString)
+                .driverClassName(myDriverClass)
+                .build();
+        }
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Add lines to application.properties
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Which db to run
+local.run.db=H2
+# local.run.db=POSTGRESQL
+
+spring.h2.console.settings.web-allow-others=true
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+# Environment Variables Needed for OAuth2 Authentication Server
+# OAUTHCLIENTID
+# OAUTHCLIENTSECRET
+
+# Find heroku info
+# heroku config -a jrmmba-shoppingcart
+
+Add SimpleCorsFilter.java to handle deploying and CORS issues
+
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+package com.lambdaschool.shoppingcart.config;
+
+import org.springframework.core.Ordered;
+import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpMethod;
+import org.springframework.stereotype.Component;
+
+import javax.servlet.*;
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.io.IOException;
+
+/**
+ * Spring uses filters to manage web traffic. Here we manually add a CORS (Cross-Origin Resource Sharing) filter to the chain.
+ * Using the Order annotation, we tell Spring this is the most important filter. If this filter blocks a request,
+ * don't do anything else. Just block the request.
+ */
+@Component
+@Order(Ordered.HIGHEST_PRECEDENCE)
+public class SimpleCorsFilter
+    implements Filter
+{
+    @Override
+    public void doFilter(
+        ServletRequest servletRequest,
+        ServletResponse servletResponse,
+        FilterChain filterChain)
+        throws
+        IOException,
+        ServletException
+    {
+        // Convert our request and response to Http ones. If they are not Http ones, an exception would be thrown
+        // that would handled by our exception handler!
+        HttpServletResponse response = (HttpServletResponse) servletResponse;
+        HttpServletRequest request = (HttpServletRequest) servletRequest;
+
+        // white list domains that can access this API. * says let everyone access it. To restrict access use something like
+        //                 response.setHeader("Access-Control-Allow-Origin",
+        //            "https://lambdaschool.com/");
+        response.setHeader("Access-Control-Allow-Origin",
+            "*");
+
+        // white list http methods that can be used with this API. * says lets them all work! To restrict access use something like
+        //        response.setHeader("Access-Control-Allow-Methods", "POST, PUT, GET, OPTIONS, DELETE");
+        response.setHeader("Access-Control-Allow-Methods",
+            "*");
+
+        // while list access headers that can be used with this API. * says lets them all work! To restrict access use something like
+        //        response.setHeader("Access-Control-Allow-Headers", "x-requested-with, authorization, content-type, access_token");
+        response.setHeader("Access-Control-Allow-Headers",
+            "*");
+
+        // maximum seconds results can be cached
+        response.setHeader("Access-Control-Max-Age",
+            "3600");
+
+        if (HttpMethod.OPTIONS.name()
+            .equalsIgnoreCase(request.getMethod()))
+        {
+            response.setStatus(HttpServletResponse.SC_OK);
+        } else
+        {
+            filterChain.doFilter(servletRequest,
+                servletResponse);
+        }
+    }
+}
+~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+***********************
+
+Problem:
+
+Heroku restarts your application once every 24 hours. It does this automatically; you have no control over it. This is a good thing and is similar to my mantra of restart your computer at least once a day!
+
+However, if you leave your code as originally deployed (with creating the database turned on seeddata active), when Heroku restarts your application, any data changes made in the last 24 hours get wiped out. So much for presient data.
+
+Solution (beta):
+
+Here is a solution. Clunky but works.
+
+Deploy your application as normal using postgresql
+
+When you first deploy your application, in application.properties, you have the following set
+
+spring.jpa.hibernate.ddl-auto=create
+spring.datasource.initialization-mode=always
+
+And you may have a SeedData class.
+
+Make sure your application is running properly.
+
+Now redeploy the same application but with the following changes:
+
+in application.properties
+
+spring.jpa.hibernate.ddl-auto=update
+spring.datasource.initialization-mode=never
+
+in the SeedData class, command out the annotation at the top of the class
+
+// @Component
+
+So, now when your application is restarted by Heroku, seed data is not active and you can keep your old data!
